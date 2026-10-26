@@ -16,6 +16,7 @@
 
 运行：python babyagi_pro.py
 """
+import glob
 import json
 import os
 import re
@@ -129,45 +130,41 @@ TOOL_IMPL = {
 # ============================================================
 # 第二层：技能目录（skill catalog）—— 每个技能是组合原子工具的操作手册
 # ============================================================
-SKILLS = [
-    {
-        "name": "document_writer",
-        "description": "写一份结构化文档（报告/计划/方案）并保存成文件",
-        "tags": ["写", "报告", "计划", "文档", "方案", "输出"],
-        "when_to_use": "任务要求产出一份成型的文档或计划文件时",
-        "steps": "先规划文档结构 → 写内容 → 用 write_file 保存 → 用 read_file 读回校验是否完整",
-        "tools": ["write_file", "read_file"],
-    },
-    {
-        "name": "calculator",
-        "description": "做数学计算并给出数值结果",
-        "tags": ["算", "计算", "数字", "数值"],
-        "when_to_use": "任务涉及数学计算、数值运算时",
-        "steps": "用 calculator 工具计算 → 输出数值结果",
-        "tools": ["calculator"],
-    },
-    {
-        "name": "file_reader",
-        "description": "读取已有文件并提取/摘要其中的信息",
-        "tags": ["读", "查", "读取", "文件", "摘要", "信息"],
-        "when_to_use": "任务要求读取或查阅已有文件的内容时",
-        "steps": "用 read_file 读取文件 → 提取关键信息或做摘要",
-        "tools": ["read_file"],
-    },
-]
+def parse_skill_md(path):
+    """解析 SKILL.md：frontmatter（name/description）+ 正文（流程/反模式/边界）。"""
+    text = open(path, encoding="utf-8").read()
+    name, description, body = "", "", text
+    m = re.match(r"^---\n(.*?)\n---\n?(.*)$", text, re.S)
+    if m:
+        front, body = m.group(1), m.group(2)
+        for line in front.split("\n"):
+            if line.startswith("name:"):
+                name = line.split(":", 1)[1].strip()
+            elif line.startswith("description:"):
+                description = line.split(":", 1)[1].strip().strip('"')
+    return {"name": name, "description": description, "body": body.strip()}
+
+
+def load_skills():
+    """从 skills/*/SKILL.md 加载技能目录。"""
+    skills = []
+    for path in sorted(glob.glob(os.path.join(BASE, "skills", "*", "SKILL.md"))):
+        skills.append(parse_skill_md(path))
+    return skills
 
 
 def skill_route(task):
     """技能路由：一阶 embedding 召回 + 二阶 LLM 精排。返回选中的技能。"""
     # 一阶召回：任务与每个技能的 description 算语义相似度，取 top-2
+    skills = load_skills()
     tv = embed(task)
-    scored = sorted(SKILLS, key=lambda s: cosine(embed(s["description"]), tv), reverse=True)
+    scored = sorted(skills, key=lambda s: cosine(embed(s["description"]), tv), reverse=True)
     top2 = scored[:2]
     print(f"  🧭 一阶召回候选技能：{[s['name'] for s in top2]}")
 
     # 二阶精排：LLM 从候选中选最合适的（无则返回 none）
     candidate_desc = "\n".join(
-        f"- {s['name']}：{s['description']}（适用：{s['when_to_use']}）" for s in top2)
+        f"- {s['name']}：{s['description']}" for s in top2)
     messages = [
         {"role": "system", "content":
             "你是技能路由器。根据任务，从候选技能里选一个最合适的。"
@@ -175,7 +172,7 @@ def skill_route(task):
         {"role": "user", "content": f"任务：{task}\n\n候选技能：\n{candidate_desc}\n\n选哪个？（只输出名字）"},
     ]
     chosen = call_llm(messages, temperature=0)["choices"][0]["message"]["content"].strip()
-    for s in SKILLS:
+    for s in skills:
         if s["name"] in chosen:
             print(f"  🎯 二阶精排选中：{s['name']}")
             return s
@@ -238,7 +235,7 @@ def execute_task(objective, task, max_tool_rounds=5):
 
     skill_ctx = "无需特定技能"
     if skill:
-        skill_ctx = f"技能「{skill['name']}」的操作步骤：{skill['steps']}"
+        skill_ctx = f"技能「{skill['name']}」的完整说明：\n{skill['body']}"
 
     messages = [
         {"role": "system", "content":

@@ -2,5 +2,5 @@
 __pycache__/
 *.pyc
 .idea/
-memory.json
+memory*.json
 agent_output/
